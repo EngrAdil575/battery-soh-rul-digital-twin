@@ -28,6 +28,7 @@ battery-soh-rul-digital-twin/
 │   ├── tables/                        Tables I–II (CSV and xlsx)
 │   ├── Paper_Graphs_Data/             Per-figure plot data (CSV), vector PDFs, and All_Graphs_Data.xlsx
 │   └── OUTPUTS_README.txt
+├── Offline_Digital_Twin_Battery_Health_Estimation.html   Standalone offline digital-twin dashboard (open in a browser)
 ├── CITATION.cff
 └── LICENSE                            MIT (code). The NASA dataset is public-domain U.S. Government work.
 ```
@@ -51,6 +52,12 @@ Dependencies are in `code/requirements.txt`: numpy, pandas, scipy, scikit-learn,
 ## Outputs
 
 `outputs/figures/` holds Figures 1–5, `outputs/tables/` holds Tables I–II (CSV and `Tables_I_II.xlsx`), and `outputs/Paper_Graphs_Data/` holds the per-figure plot data and vector PDFs. `outputs/OUTPUTS_README.txt` maps each file to the paper.
+
+## Offline digital twin
+
+`Offline_Digital_Twin_Battery_Health_Estimation.html` is a standalone, offline digital-twin dashboard for the unseen test cell B0018. It needs no server or internet connection — open the file in any web browser.
+
+Battery health is read from two places at once: the trend and diagnostic graphs, and the colour of the battery cells. Drag or scroll the horizontal battery-cycle bar at the top of the page to the right to step through the ageing cycles. As the cycle increases, the predicted State of Health falls and the cells shift from **green** (healthy) toward **orange** (warning), so the degradation and the point at which the battery enters a warning state can be seen directly from the colour change. The dashboard also shows the predicted SOH and RUL, the measured-versus-AI SOH trend, the baseline diagnostics, and the status of every cell in the fleet at the selected cycle.
 
 ## Citation
 
