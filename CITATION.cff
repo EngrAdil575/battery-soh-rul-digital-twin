@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite the conference paper below and the NASA PCoE battery dataset (Saha and Goebel, 2007)."
+title: "Deep Learning-Based State of Health and Remaining Useful Life Prediction for Lithium-Ion Batteries Using a Hybrid CNN-LSTM Architecture"
+type: software
+authors:
+  - family-names: Wais
+    given-names: Muhammad Waiz
+    affiliation: "Riphah International University, Pakistan"
+  - family-names: Mangal
+    given-names: Roya
+    affiliation: "Riphah International University, Pakistan"
+  - family-names: Orakzai
+    given-names: Muhammad Sadiq
+    affiliation: "Riphah International University, Pakistan"
+  - family-names: Zohaib
+    given-names: Adil
+    affiliation: "Riphah International University, Pakistan"
+  - family-names: Khalid
+    given-names: Sohail
+    affiliation: "University of Management and Technology, Pakistan"
+  - family-names: Sheh Zad
+    given-names: Haris
+    affiliation: "Pak-Austria Fachhochschule: Institute of Applied Sciences and Technology, Pakistan"
+year: 2026
+license: MIT
+references:
+  - type: data
+    title: "Battery data set"
+    authors:
+      - family-names: Saha
+        given-names: B.
+      - family-names: Goebel
+        given-names: K.
+    publisher:
+      name: "NASA Prognostics Data Repository, NASA Ames Research Center"
+    year: 2007
+    notes: "NASA Prognostics Center of Excellence (PCoE), lithium-ion battery aging dataset. U.S. Government work, public domain."

@@ -1,0 +1,10 @@
+numpy
+pandas
+scipy
+scikit-learn
+tensorflow
+matplotlib
+gradio
+
+# The notebook is written for Google Colab. gradio powers the digital-twin
+# interface (Figs 4-5). Versions are left unpinned to match the Colab environment.
