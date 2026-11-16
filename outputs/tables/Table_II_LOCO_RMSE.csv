@@ -1,0 +1,6 @@
+Test cell,SOH RMSE x1e-2 | LSTM | with Cycle,RUL RMSE | LSTM | with Cycle,SOH RMSE x1e-2 | LSTM | without Cycle,RUL RMSE | LSTM | without Cycle,SOH RMSE x1e-2 | Hybrid CNN-LSTM | with Cycle,RUL RMSE | Hybrid CNN-LSTM | with Cycle,SOH RMSE x1e-2 | Hybrid CNN-LSTM | without Cycle,RUL RMSE | Hybrid CNN-LSTM | without Cycle
+B0005,3.28 ± 0.57,16.17 ± 4.14,3.02 ± 0.62,9.87 ± 0.40,4.28 ± 0.54,17.04 ± 5.12,6.24 ± 1.83,23.94 ± 6.75
+B0006,6.36 ± 1.14,36.04 ± 5.43,6.17 ± 1.14,35.77 ± 4.62,7.47 ± 0.64,32.76 ± 1.65,7.84 ± 0.72,39.53 ± 8.00
+B0007,5.30 ± 4.39,45.45 ± 7.46,3.44 ± 1.57,40.11 ± 9.88,6.48 ± 1.45,53.38 ± 6.57,7.12 ± 2.45,49.38 ± 4.18
+B0018,3.22 ± 0.80,7.97 ± 3.09,3.65 ± 0.56,13.09 ± 1.40,3.12 ± 1.49,9.70 ± 2.10,3.06 ± 0.64,15.73 ± 3.57
+"Ensemble, mean over cells",4.11 ± 1.68,26.00 ± 17.74,3.74 ± 1.58,24.14 ± 16.02,5.08 ± 2.27,27.59 ± 19.90,5.86 ± 2.25,31.26 ± 16.17

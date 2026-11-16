@@ -1,0 +1,4 @@
+Study,Data and validation,Methods,SOC,SOH,RUL,Reported result
+Li et al. [4] (2020),Prototypes; field and laboratory tests,Cloud BMS; equivalent-circuit SOC and SOH estimation,Yes,Yes,No,Not directly comparable
+Chen and Fang [6] (2024),"Domestic solar storage; field data (2022, 2023)",Coulomb counting; Gaussian CE; energy correction; L-BFGS-B SOC optimization,Yes,No,No,SOC MSE 165.77 (2022) and 261.36 (2023); CE 0.978
+This work (2026),"NASA B0005, B0006, B0007, B0018; leave-one-cell-out",LSTM and CNN-LSTM for SOH and RUL; diagnostics of [6],Adapted (no measured SOC reference),Yes,Yes,SOH RMSE 0.0374; RUL RMSE 24.1 cycles (mean over held-out cells)

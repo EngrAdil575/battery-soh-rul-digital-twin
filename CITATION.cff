@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this repository, please cite the conference paper below and the NASA PCoE battery dataset (Saha and Goebel, 2007)."
-title: "Deep Learning-Based State of Health and Remaining Useful Life Prediction for Lithium-Ion Batteries Using a Hybrid CNN-LSTM Architecture"
+title: "Deep Learning-Based State of Health and Remaining Useful Life Prediction for Lithium-Ion Batteries: A Leave-One-Cell-Out Comparison of LSTM and Hybrid CNN-LSTM"
 type: software
 authors:
   - family-names: Wais

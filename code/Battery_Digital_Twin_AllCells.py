@@ -13,7 +13,7 @@ drive.mount("/content/drive")
 
 # Find the NASA battery .mat files anywhere in Drive; extract the zip only if they are not there yet
 ROOT = "/content/drive/MyDrive"
-OUT = "/content/drive/MyDrive/FYP_NASA_Battery/paper_results"
+OUT = "/content/drive/MyDrive/FYP_NASA_Battery/paper_results/revised"
 os.makedirs(OUT, exist_ok=True)
 
 def find_b0005():
@@ -39,75 +39,70 @@ print(sorted(f for f in os.listdir(battery_path) if f.endswith(".mat")))
 print("Results folder:", OUT)
 
 # ===== Cell 2 =====
-all_data = []
+EOL_FRAC = 0.80
+rows = []
 for name in BATTERIES:
-    cycles = loadmat(os.path.join(battery_path, f"{name}.mat"))[name][0, 0]["cycle"]
-    records = []
-    for i in range(len(cycles[0])):
-        c = cycles[0, i]
+    cyc = loadmat(os.path.join(battery_path, f"{name}.mat"))[name][0, 0]["cycle"]
+    k = 0
+    for i in range(cyc.shape[1]):
+        c = cyc[0, i]
         if c["type"][0] != "discharge":
             continue
+        k += 1
         d = c["data"][0, 0]
-        voltage = d["Voltage_measured"].flatten()
-        current = d["Current_measured"].flatten()
-        temperature = d["Temperature_measured"].flatten()
-        time = d["Time"].flatten()
-        records.append({
-            "Battery": name,
-            "Cycle": i + 1,
-            "Capacity_Ah": float(d["Capacity"].flatten()[0]),
-            "Voltage_mean": np.mean(voltage),
-            "Voltage_min": np.min(voltage),
-            "Voltage_max": np.max(voltage),
-            "Current_mean": np.mean(current),
-            "Temperature_mean": np.mean(temperature),
-            "Temperature_max": np.max(temperature),
-            "Discharge_time_s": time[-1] - time[0],
-        })
-    battery_df = pd.DataFrame(records)
-    initial = battery_df["Capacity_Ah"].iloc[0]
-    battery_df["SOH"] = battery_df["Capacity_Ah"] / initial
-    eol_rows = battery_df.index[battery_df["Capacity_Ah"] <= initial * 0.70]
-    eol_cycle = battery_df.loc[eol_rows[0], "Cycle"] if len(eol_rows) else battery_df["Cycle"].iloc[-1]
-    battery_df["RUL"] = np.maximum(eol_cycle - battery_df["Cycle"], 0)
-    all_data.append(battery_df)
+        v, cu = d["Voltage_measured"].flatten(), d["Current_measured"].flatten()
+        t, tm = d["Temperature_measured"].flatten(), d["Time"].flatten()
+        rows.append({"Battery": name, "Cycle": k, "Record": i + 1,
+                     "Capacity_Ah": float(d["Capacity"].flatten()[0]),
+                     "Voltage_mean": v.mean(), "Voltage_min": v.min(), "Voltage_max": v.max(),
+                     "Current_mean": cu.mean(), "Temperature_mean": t.mean(), "Temperature_max": t.max(),
+                     "Discharge_time_s": tm[-1] - tm[0]})
+df = pd.DataFrame(rows)
 
-df = pd.concat(all_data, ignore_index=True)
+eol_rows = []
+for b, g in df.groupby("Battery"):
+    q0 = g["Capacity_Ah"].iloc[0]
+    df.loc[g.index, "SOH"] = g["Capacity_Ah"] / q0
+    eol = int(g.loc[g["Capacity_Ah"] <= EOL_FRAC * q0, "Cycle"].iloc[0])
+    df.loc[g.index, "EOL_cycle"] = eol
+    df.loc[g.index, "RUL"] = np.maximum(eol - g["Cycle"], 0)
+    eol_rows.append({"Cell": b, "Cycles": len(g), "Q0 (Ah)": round(q0, 3), "EOL (80%)": eol,
+                     "Min SOH (%)": round(100 * g["Capacity_Ah"].min() / q0, 1)})
+eol_table = pd.DataFrame(eol_rows)
 df.to_csv(os.path.join(OUT, "cycle_level_dataset.csv"), index=False)
-print(df.groupby("Battery").size())
 print(df.shape)
+print(eol_table.to_string(index=False))
 
 # ===== Cell 3 =====
-cycles = loadmat(os.path.join(battery_path, "B0005.mat"))["B0005"][0, 0]["cycle"]
-
 def calculate_charge_capacity(current, time):
     current, time = np.asarray(current).flatten(), np.asarray(time).flatten()
-    dt = np.diff(time)
     current_mid = (current[:-1] + current[1:]) / 2
-    return np.sum(np.abs(current_mid) * dt) / 3600          # Ah
+    return np.sum(np.abs(current_mid) * np.diff(time)) / 3600          # Ah
 
-# charge -> discharge pairs
-pairs = []
-for i in range(cycles.shape[1] - 1):
-    if cycles[0, i]["type"][0] == "charge" and cycles[0, i + 1]["type"][0] == "discharge":
-        pairs.append({"Charge_Cycle": i + 1, "Discharge_Cycle": i + 2})
-pairs_df = pd.DataFrame(pairs)
+def coulombic_efficiency(name):
+    cyc = loadmat(os.path.join(battery_path, f"{name}.mat"))[name][0, 0]["cycle"]
+    rows = []
+    for i in range(cyc.shape[1] - 1):
+        if cyc[0, i]["type"][0] == "charge" and cyc[0, i + 1]["type"][0] == "discharge":
+            ch, dis = cyc[0, i]["data"][0, 0], cyc[0, i + 1]["data"][0, 0]
+            q_ch = calculate_charge_capacity(ch["Current_charge"], ch["Time"])
+            q_dis = float(np.asarray(dis["Capacity"]).flatten()[0])
+            rows.append({"Charge_Cycle": i + 1, "Discharge_Cycle": i + 2, "Q_charge_Ah": q_ch,
+                         "Q_discharge_Ah": q_dis, "CE": q_dis / q_ch if q_ch > 0 else np.nan})
+    ce = pd.DataFrame(rows)
+    return cyc, ce, ce[(ce["Q_charge_Ah"] > 1.0) & (ce["Q_charge_Ah"] < 2.5)].copy()
 
 ce_rows = []
-for _, pair in pairs_df.iterrows():
-    charge_data = cycles[0, int(pair["Charge_Cycle"]) - 1]["data"][0, 0]
-    discharge_data = cycles[0, int(pair["Discharge_Cycle"]) - 1]["data"][0, 0]
-    q_charge = calculate_charge_capacity(charge_data["Current_charge"], charge_data["Time"])
-    q_discharge = float(np.asarray(discharge_data["Capacity"]).flatten()[0])
-    ce_rows.append({"Charge_Cycle": int(pair["Charge_Cycle"]), "Discharge_Cycle": int(pair["Discharge_Cycle"]),
-                    "Q_charge_Ah": q_charge, "Q_discharge_Ah": q_discharge,
-                    "CE": q_discharge / q_charge if q_charge > 0 else np.nan})
-ce_df = pd.DataFrame(ce_rows)
+for name in BATTERIES:
+    _, ce_all, ce_ok = coulombic_efficiency(name)
+    ce_rows.append({"Cell": name, "CE pairs": len(ce_ok), "Mean CE": round(ce_ok["CE"].mean(), 4),
+                    "Std CE": round(ce_ok["CE"].std(ddof=0), 4)})
+table_I = eol_table.merge(pd.DataFrame(ce_rows), on="Cell")
+table_I.to_csv(os.path.join(OUT, "Table_I_cells_EOL_CE.csv"), index=False)
+print("Table I\n", table_I.to_string(index=False))
 
-ce_valid = ce_df[(ce_df["Q_charge_Ah"] > 1.0) & (ce_df["Q_charge_Ah"] < 2.5)].copy()
-print("Charge-discharge pairs:", len(pairs_df))
-print("Valid CE pairs:", len(ce_valid))
-print("Mean CE:", round(ce_valid["CE"].mean(), 4))
+# B0005 is used for the detailed diagnostics below (Fig. 2)
+cycles, pairs_df, ce_valid = coulombic_efficiency("B0005")
 
 # ===== Cell 4 =====
 from scipy.stats import norm
@@ -183,44 +178,30 @@ print("Optimal nc:", result_final.x[0], " Optimal dc:", result_final.x[1])
 print("Minimum MSE:", result_final.fun, " Iterations:", result_final.nit)
 
 # ===== Cell 7 =====
-from sklearn.preprocessing import StandardScaler
-
-features = ["Cycle", "Voltage_mean", "Voltage_min", "Voltage_max",
-            "Current_mean", "Temperature_mean", "Temperature_max", "Discharge_time_s"]
-train_df = df[df["Battery"].isin(["B0005", "B0006", "B0007"])].copy()
-test_df = df[df["Battery"] == "B0018"].copy()
-
-x_scaler = StandardScaler().fit(train_df[features].values)
-y_scaler = StandardScaler().fit(train_df[["SOH", "RUL"]].values)
-
-sequence_length = 20
-
-def make_sequences(dataframe):
-    X = x_scaler.transform(dataframe[features].values)
-    y = y_scaler.transform(dataframe[["SOH", "RUL"]].values)
-    X_seq = [X[i:i + sequence_length] for i in range(len(X) - sequence_length + 1)]
-    y_seq = [y[i + sequence_length - 1] for i in range(len(X) - sequence_length + 1)]
-    return np.array(X_seq), np.array(y_seq)
-
-print("Training cycles:", len(train_df), " Test cycles:", len(test_df))
-
-# ===== Cell 8 =====
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.callbacks import EarlyStopping
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+SEQ = 20
 N_SEEDS = 5
+MODELS = ["LSTM", "Hybrid CNN-LSTM"]
+FEATS_ALL = ["Cycle", "Voltage_mean", "Voltage_min", "Voltage_max", "Current_mean",
+             "Temperature_mean", "Temperature_max", "Discharge_time_s"]
+FEATURE_SETS = {"with Cycle": FEATS_ALL, "without Cycle": FEATS_ALL[1:]}
 
-def set_seed(s):
-    random.seed(s); np.random.seed(s); tf.random.set_seed(s)
+def windows(g, feats, xs, ys):
+    X = xs.transform(g[feats].values); y = ys.transform(g[["SOH", "RUL"]].values)
+    n = len(g) - SEQ + 1
+    return np.array([X[i:i + SEQ] for i in range(n)]), np.array([y[i + SEQ - 1] for i in range(n)])
 
-def build_model(kind):
-    inp = keras.Input((sequence_length, len(features)))
+def build(kind, nfeat):
+    inp = keras.Input((SEQ, nfeat))
     if kind == "LSTM":
         x = layers.LSTM(64)(inp)
-    else:                                   # Hybrid CNN-LSTM
+    else:
         x = layers.Conv1D(64, 3, padding="causal", activation="relu")(inp)
         x = layers.Conv1D(64, 3, padding="causal", activation="relu")(x)
         x = layers.LSTM(64)(x)
@@ -230,61 +211,212 @@ def build_model(kind):
     m.compile(optimizer="adam", loss="mse")
     return m
 
-X_tr, y_tr = zip(*[make_sequences(train_df[train_df["Battery"] == b]) for b in ["B0005", "B0006", "B0007"]])
-X_tr, y_tr = np.concatenate(X_tr), np.concatenate(y_tr)
-X_te, y_te = make_sequences(test_df)
-actual = y_scaler.inverse_transform(y_te)
-test_cycles = test_df["Cycle"].iloc[sequence_length - 1:].values
+def scores(y, p):
+    return {"RMSE": np.sqrt(mean_squared_error(y, p)), "MAE": mean_absolute_error(y, p), "R2": r2_score(y, p)}
 
-class Ensemble:
-    """Mean prediction of the N_SEEDS trained networks."""
-    def __init__(self, nets): self.nets = nets
-    def predict(self, X, verbose=0): return np.mean([n.predict(X, verbose=0) for n in self.nets], axis=0)
+# ===== Cell 8 =====
+per_seed, ensemble, preds = [], [], []
+for test_b in BATTERIES:
+    train_bs = [b for b in BATTERIES if b != test_b]
+    tr_df, te_df = df[df.Battery.isin(train_bs)], df[df.Battery == test_b]
+    for fname, feats in FEATURE_SETS.items():
+        xs = StandardScaler().fit(tr_df[feats].values)
+        ys = StandardScaler().fit(tr_df[["SOH", "RUL"]].values)
+        Xtr, Ytr, Xva, Yva = [], [], [], []
+        for b in train_bs:
+            Xb, Yb = windows(df[df.Battery == b], feats, xs, ys)
+            cut = len(Xb) - int(round(0.2 * len(Xb)))
+            Xtr.append(Xb[:cut - (SEQ - 1)]); Ytr.append(Yb[:cut - (SEQ - 1)])     # gap: no shared cycles
+            Xva.append(Xb[cut:]); Yva.append(Yb[cut:])
+        Xtr, Ytr, Xva, Yva = map(np.concatenate, (Xtr, Ytr, Xva, Yva))
+        Xte, Yte = windows(te_df, feats, xs, ys)
+        act = ys.inverse_transform(Yte)
+        te_cyc = te_df["Cycle"].values[SEQ - 1:]
+        upto = te_cyc <= int(te_df["EOL_cycle"].iloc[0])                          # RUL scored up to EOL
+        for kind in MODELS:
+            seed_preds = []
+            for s in range(N_SEEDS):
+                random.seed(s); np.random.seed(s); tf.random.set_seed(s)
+                m = build(kind, len(feats))
+                m.fit(Xtr, Ytr, validation_data=(Xva, Yva), epochs=100, batch_size=16, verbose=0, shuffle=True,
+                      callbacks=[EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True)])
+                p = ys.inverse_transform(m.predict(Xte, verbose=0)); seed_preds.append(p)
+                per_seed.append({"Test cell": test_b, "Features": fname, "Model": kind, "Seed": s,
+                                 **{f"SOH {k}": v for k, v in scores(act[:, 0], p[:, 0]).items()},
+                                 **{f"RUL {k}": v for k, v in scores(act[upto, 1], p[upto, 1]).items()}})
+                tf.keras.backend.clear_session()
+            pe = np.mean(seed_preds, axis=0)
+            ensemble.append({"Test cell": test_b, "Features": fname, "Model": kind,
+                             **{f"SOH {k}": v for k, v in scores(act[:, 0], pe[:, 0]).items()},
+                             **{f"RUL {k}": v for k, v in scores(act[upto, 1], pe[upto, 1]).items()}})
+            preds.append(pd.DataFrame({"Test cell": test_b, "Features": fname, "Model": kind, "Cycle": te_cyc,
+                                       "Actual SOH": act[:, 0], "Pred SOH": pe[:, 0],
+                                       "Actual RUL": act[:, 1], "Pred RUL": pe[:, 1]}))
+            print(f"{test_b} | {fname:13s} | {kind:15s} | SOH RMSE {ensemble[-1]['SOH RMSE']:.4f} | RUL RMSE {ensemble[-1]['RUL RMSE']:.2f}")
 
-MODEL_NAMES = ["LSTM", "Hybrid CNN-LSTM"]
-NETS, HIST, PRED = {}, {}, {}
-for kind in MODEL_NAMES:
-    nets, hists = [], []
-    for s in range(N_SEEDS):
-        set_seed(s)
-        net = build_model(kind)
-        h = net.fit(X_tr, y_tr, validation_split=0.2, epochs=100, batch_size=16, verbose=0,
-                    callbacks=[EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True)])
-        nets.append(net); hists.append(h.history)
-    NETS[kind], HIST[kind] = Ensemble(nets), hists[0]
-    PRED[kind] = y_scaler.inverse_transform(NETS[kind].predict(X_te))
-    print(f"{kind}: trained {N_SEEDS} runs")
+per_seed, ensemble, preds = pd.DataFrame(per_seed), pd.DataFrame(ensemble), pd.concat(preds, ignore_index=True)
+per_seed.to_csv(os.path.join(OUT, "LOCO_per_seed.csv"), index=False)
+ensemble.to_csv(os.path.join(OUT, "LOCO_ensemble_per_cell.csv"), index=False)
+preds.to_csv(os.path.join(OUT, "LOCO_predictions.csv"), index=False)
 
-def metrics(y, p):
-    nz = y != 0                                  # MAPE is undefined where the true value is 0
-    return {"MSE": mean_squared_error(y, p), "RMSE": np.sqrt(mean_squared_error(y, p)),
-            "MAE": mean_absolute_error(y, p), "MAPE (%)": 100 * np.mean(np.abs((p[nz] - y[nz]) / y[nz])),
-            "R2": r2_score(y, p)}
+# ---------- Table II: per-seed RMSE (mean ± std) per test cell + ensemble mean over cells ----------
+def fmt(m, s, scale): return f"{m*scale:.2f} ± {s*scale:.2f}"
+cols = [(f, k) for k in MODELS for f in FEATURE_SETS]
+table_II = []
+for b in BATTERIES:
+    row = {"Test cell": b}
+    for f, k in cols:
+        g = per_seed[(per_seed["Test cell"] == b) & (per_seed.Features == f) & (per_seed.Model == k)]
+        row[f"SOH RMSE x1e-2 | {k} | {f}"] = fmt(g["SOH RMSE"].mean(), g["SOH RMSE"].std(), 100)
+        row[f"RUL RMSE | {k} | {f}"] = fmt(g["RUL RMSE"].mean(), g["RUL RMSE"].std(), 1)
+    table_II.append(row)
+row = {"Test cell": "Ensemble, mean over cells"}
+for f, k in cols:
+    g = ensemble[(ensemble.Features == f) & (ensemble.Model == k)]
+    row[f"SOH RMSE x1e-2 | {k} | {f}"] = fmt(g["SOH RMSE"].mean(), g["SOH RMSE"].std(), 100)
+    row[f"RUL RMSE | {k} | {f}"] = fmt(g["RUL RMSE"].mean(), g["RUL RMSE"].std(), 1)
+table_II.append(row)
+table_II = pd.DataFrame(table_II)
+table_II.to_csv(os.path.join(OUT, "Table_II_LOCO_RMSE.csv"), index=False)
 
-rows = []
-for kind in MODEL_NAMES:
-    for j, target in enumerate(["SOH", "RUL"]):
-        rows.append({"Model": kind, "Target": target, **metrics(actual[:, j], PRED[kind][:, j])})
-RESULTS = pd.DataFrame(rows)
-RESULTS.to_csv(os.path.join(OUT, "results_LSTM_vs_Hybrid.csv"), index=False)
+summary = ensemble.groupby(["Features", "Model"])[["SOH RMSE", "SOH R2", "RUL RMSE", "RUL R2"]].mean()
 pd.set_option("display.float_format", lambda v: f"{v:.4f}")
-print("\nTable I - Performance on the unseen B0018 battery")
-print(RESULTS.to_string(index=False))
-
-BEST = RESULTS[RESULTS.Target == "SOH"].sort_values("RMSE").iloc[0]["Model"]
-print(f"\nDigital Twin will use: {BEST}")
-
-# predictions behind Fig. 3
-pd.DataFrame({"Cycle": test_cycles,
-              "Actual SOH (%)": actual[:, 0] * 100,
-              "LSTM SOH (%)": PRED["LSTM"][:, 0] * 100,
-              "Hybrid CNN-LSTM SOH (%)": PRED["Hybrid CNN-LSTM"][:, 0] * 100,
-              "Actual RUL (cycles)": actual[:, 1],
-              "LSTM RUL (cycles)": PRED["LSTM"][:, 1],
-              "Hybrid CNN-LSTM RUL (cycles)": PRED["Hybrid CNN-LSTM"][:, 1]}
-             ).to_csv(os.path.join(OUT, "predictions_B0018.csv"), index=False)
+print("\nTable II\n", table_II.T.to_string(header=False))
+print("\nEnsemble, mean over the 4 held-out cells\n", summary)
 
 # ===== Cell 9 =====
+# =====================================================================================================
+# 5B. Leave-One-Cell-Out with EXACTLY the settings of the accepted paper (Fold 4 = original experiment)
+#   Same as the accepted paper: Cycle = NASA record index, EOL = 70% of initial capacity (last record if
+#   not reached), 8 features, 20-cycle windows, LSTM(64) / CNN-LSTM (2x Conv1D 64, k=3), Adam, MSE, batch 16,
+#   max 100 epochs, validation_split 0.2, EarlyStopping(patience 10), 5 seeds -> mean prediction.
+#   Outputs (paper_results/revised/LOCO_original):
+#     Table o_A: unseen-cell RMSE / MAE / MAPE for SOH and RUL, LSTM vs CNN-LSTM, + average
+#     Table o_B: proposed CNN-LSTM on training cells (seen) vs the unseen cell, for every fold
+#     Figure : actual vs predicted SOH for all 4 cells as unseen test cells (2 x 2)
+#   Run time on a T4 GPU: about 30-40 minutes.
+# =====================================================================================================
+import os, random, numpy as np, pandas as pd, matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.callbacks import EarlyStopping
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+LOCO_OUT = os.path.join(OUT, "LOCO_original"); os.makedirs(LOCO_OUT, exist_ok=True)
+
+# ---------- dataset with the accepted paper's definitions (built from the Section 2 table) ----------
+df_orig = df.copy()
+df_orig["Cycle"] = df_orig["Record"]                         # NASA record index, as in the accepted paper
+for b, g in df_orig.groupby("Battery"):
+    q0 = g["Capacity_Ah"].iloc[0]
+    below = g.index[g["Capacity_Ah"] <= 0.70 * q0]
+    eol = df_orig.loc[below[0], "Cycle"] if len(below) else g["Cycle"].iloc[-1]
+    df_orig.loc[g.index, "RUL"] = np.maximum(eol - g["Cycle"], 0)
+
+o_FEATS = ["Cycle", "Voltage_mean", "Voltage_min", "Voltage_max",
+         "Current_mean", "Temperature_mean", "Temperature_max", "Discharge_time_s"]
+o_SEQ, o_N_SEEDS = 20, 5
+o_MODELS = {"LSTM": "LSTM", "Hybrid CNN-LSTM": "CNN-LSTM"}
+
+def o_seqs(g, o_xs, o_ys):
+    X = o_xs.transform(g[o_FEATS].values); y = o_ys.transform(g[["SOH", "RUL"]].values)
+    n = len(g) - o_SEQ + 1
+    return np.array([X[i:i + o_SEQ] for i in range(n)]), np.array([y[i + o_SEQ - 1] for i in range(n)])
+
+def o_build(o_kind):
+    inp = keras.Input((o_SEQ, len(o_FEATS)))
+    if o_kind == "LSTM":
+        x = layers.LSTM(64)(inp)
+    else:
+        x = layers.Conv1D(64, 3, padding="causal", activation="relu")(inp)
+        x = layers.Conv1D(64, 3, padding="causal", activation="relu")(x)
+        x = layers.LSTM(64)(x)
+    x = layers.Dropout(0.2)(x); x = layers.Dense(32, activation="relu")(x)
+    m = keras.Model(inp, layers.Dense(2)(x)); m.compile(optimizer="adam", loss="mse")
+    return m
+
+def o_scores(y, p):
+    nz = y != 0
+    return {"RMSE": np.sqrt(mean_squared_error(y, p)), "MAE": mean_absolute_error(y, p),
+            "MAPE (%)": 100 * np.mean(np.abs((p[nz] - y[nz]) / y[nz])), "R2": r2_score(y, p)}
+
+o_unseen_rows, o_seen_rows, o_seed_rows, o_curves = [], [], [], {}
+for o_test_b in BATTERIES:
+    o_train_bs = [b for b in BATTERIES if b != o_test_b]
+    o_tr = df_orig[df_orig.Battery.isin(o_train_bs)]
+    o_xs = StandardScaler().fit(o_tr[o_FEATS].values); o_ys = StandardScaler().fit(o_tr[["SOH", "RUL"]].values)
+    o_Xtr, o_Ytr = zip(*[o_seqs(df_orig[df_orig.Battery == b], o_xs, o_ys) for b in o_train_bs])
+    o_Xtr, o_Ytr = np.concatenate(o_Xtr), np.concatenate(o_Ytr)
+    o_evals = {b: o_seqs(df_orig[df_orig.Battery == b], o_xs, o_ys) for b in BATTERIES}
+    for o_kind, o_short in o_MODELS.items():
+        o_preds = {b: [] for b in BATTERIES}
+        for s in range(o_N_SEEDS):
+            random.seed(s); np.random.seed(s); tf.random.set_seed(s)
+            m = o_build(o_kind)
+            m.fit(o_Xtr, o_Ytr, validation_split=0.2, epochs=100, batch_size=16, verbose=0,
+                  callbacks=[EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True)])
+            for b in BATTERIES:
+                o_preds[b].append(o_ys.inverse_transform(m.predict(o_evals[b][0], verbose=0)))
+            a = o_ys.inverse_transform(o_evals[o_test_b][1]); p = o_preds[o_test_b][-1]
+            o_seed_rows.append({"Unseen cell": o_test_b, "Model": o_short, "Seed": s,
+                              "SOH RMSE": o_scores(a[:, 0], p[:, 0])["RMSE"], "RUL RMSE": o_scores(a[:, 1], p[:, 1])["RMSE"]})
+            tf.keras.backend.clear_session()
+        for b in BATTERIES:
+            a = o_ys.inverse_transform(o_evals[b][1]); p = np.mean(o_preds[b], axis=0)
+            row = {"Unseen cell": o_test_b, "Model": o_short, "Cell": b, "Role": "unseen (test)" if b == o_test_b else "seen (training)",
+                   **{f"SOH {k}": v for k, v in o_scores(a[:, 0], p[:, 0]).items()},
+                   **{f"RUL {k}": v for k, v in o_scores(a[:, 1], p[:, 1]).items()}}
+            (o_unseen_rows if b == o_test_b else o_seen_rows).append(row)
+            if b == o_test_b:
+                o_curves[(o_test_b, o_short)] = (df_orig[df_orig.Battery == b]["Cycle"].values[o_SEQ - 1:], a[:, 0], p[:, 0])
+        print(f"Unseen {o_test_b} | {o_short:8s} | SOH RMSE {o_unseen_rows[-1]['SOH RMSE']:.4f} | RUL RMSE {o_unseen_rows[-1]['RUL RMSE']:.2f}")
+
+o_U = pd.DataFrame(o_unseen_rows); o_S = pd.DataFrame(o_seen_rows); o_SD = pd.DataFrame(o_seed_rows)
+o_U.to_csv(os.path.join(LOCO_OUT, "LOCO_unseen_all_metrics.csv"), index=False)
+o_S.to_csv(os.path.join(LOCO_OUT, "LOCO_seen_training_cells.csv"), index=False)
+o_SD.to_csv(os.path.join(LOCO_OUT, "LOCO_per_seed.csv"), index=False)
+
+# ---------- Table o_A: unseen cell, LSTM vs CNN-LSTM ----------
+o_cols = ["SOH RMSE", "SOH MAE", "SOH MAPE (%)", "RUL RMSE", "RUL MAE"]
+o_A = o_U.pivot(index="Unseen cell", columns="Model", values=o_cols)
+o_A.loc["Average"] = o_A.mean()
+o_A = o_A.reindex(columns=pd.MultiIndex.from_product([o_cols, ["LSTM", "CNN-LSTM"]]))
+o_A.to_csv(os.path.join(LOCO_OUT, "Table_A_LOCO_unseen.csv"))
+o_std = o_SD.groupby(["Unseen cell", "Model"])[["SOH RMSE", "RUL RMSE"]].std().unstack()
+o_std.to_csv(os.path.join(LOCO_OUT, "Table_A_seed_std.csv"))
+
+# ---------- Table o_B: proposed CNN-LSTM, seen (training) vs unseen cell ----------
+o_B = pd.concat([o_S[o_S.Model == "CNN-LSTM"], o_U[o_U.Model == "CNN-LSTM"]])
+o_B = o_B[["Unseen cell", "Cell", "Role", "SOH RMSE", "SOH MAE", "SOH MAPE (%)"]].sort_values(["Unseen cell", "Role", "Cell"])
+o_B.to_csv(os.path.join(LOCO_OUT, "Table_B_CNNLSTM_seen_vs_unseen.csv"), index=False)
+
+# ---------- Figure: actual vs predicted SOH for every cell as the unseen cell ----------
+plt.rcParams.update({"font.family": "serif", "font.serif": ["Times New Roman", "Liberation Serif", "DejaVu Serif"],
+                     "font.size": 10, "legend.fontsize": 9})
+o_fig, o_ax = plt.subplots(2, 2, figsize=(7.2, 5.2))
+for k, b in enumerate(BATTERIES):
+    a_ = o_ax[k // 2, k % 2]
+    cyc, act, pl = o_curves[(b, "LSTM")]; _, _, pc = o_curves[(b, "CNN-LSTM")]
+    a_.plot(cyc, 100 * act, color="black", lw=1.6, label="Actual SOH")
+    a_.plot(cyc, 100 * pl, color="tab:blue", ls="--", lw=1.3, marker="s", ms=3.5, mfc="white", markevery=8, label="LSTM")
+    a_.plot(cyc, 100 * pc, color="tab:brown", lw=1.3, marker="^", ms=4.5, markevery=(4, 8), label="CNN-LSTM")
+    a_.set_title(f"Unseen cell {b}"); a_.grid(True, alpha=0.3)
+    a_.set_xlabel("Cycle"); a_.set_ylabel("SOH (%)")
+o_ax[0, 0].legend(frameon=False)
+o_fig.tight_layout(); o_fig.savefig(os.path.join(LOCO_OUT, "Fig_LOCO_SOH_all_cells.png"), dpi=300); plt.show()
+
+pd.set_option("display.float_format", lambda v: f"{v:.4f}")
+print("\nTABLE o_A - unseen test cell (5-seed mean prediction)\n", o_A.round(4).to_string())
+print("\nSeed o_std of RMSE\n", o_std.round(4).to_string())
+print("\nTABLE o_B - proposed CNN-LSTM: training cells (seen) vs unseen cell\n", o_B.round(4).to_string(index=False))
+o_wins = (o_A.loc[BATTERIES, ("SOH RMSE", "CNN-LSTM")] < o_A.loc[BATTERIES, ("SOH RMSE", "LSTM")]).sum()
+print(f"\nCNN-LSTM has lower SOH RMSE on {o_wins} of 4 unseen cells; average SOH RMSE  LSTM "
+      f"{o_A.loc['Average', ('SOH RMSE', 'LSTM')]:.4f}  vs  CNN-LSTM {o_A.loc['Average', ('SOH RMSE', 'CNN-LSTM')]:.4f}")
+print("All files saved to", LOCO_OUT)
+
+# ===== Cell 10 =====
 plt.rcParams.update({"font.size": 11, "axes.labelsize": 11, "legend.fontsize": 9.5,
                      "xtick.labelsize": 10, "ytick.labelsize": 10})
 
@@ -321,24 +453,68 @@ plt.show()
 ce_valid.to_csv(os.path.join(OUT, "Fig2a_CE_values_B0005.csv"), index=False)
 energy_valid.to_csv(os.path.join(OUT, "Fig2b_energy_correction_B0005.csv"), index=False)
 
-# ===== Cell 10 =====
-STYLE = {
-    "Actual":          dict(color="black",      ls="-",  lw=1.8, marker=None),
-    "LSTM":            dict(color="tab:blue",   ls="--", lw=1.5, marker="s", ms=5, mfc="white", markevery=8),
-    "Hybrid CNN-LSTM": dict(color="tab:brown",  ls="-",  lw=1.5, marker="^", ms=6, markevery=(4, 8)),
-}
-for j, (name, ylabel, scale) in enumerate([("SOH", "SOH (%)", 100), ("RUL", "RUL (cycles)", 1)]):
-    plt.figure(figsize=(5, 3.1))
-    plt.plot(test_cycles, actual[:, j] * scale, label=f"Actual {name}", **STYLE["Actual"])
-    for kind in MODEL_NAMES:
-        plt.plot(test_cycles, PRED[kind][:, j] * scale, label=kind, **STYLE[kind])
-    plt.xlabel("Cycle"); plt.ylabel(ylabel)
-    plt.legend(frameon=False); plt.grid(True, alpha=0.3); plt.tight_layout()
-    plt.savefig(os.path.join(OUT, f"Actual_vs_Predicted_{name}.png"), dpi=300)
-    plt.show()
-print("Figures saved to", OUT)
-
 # ===== Cell 11 =====
+P_all = preds
+P_all = P_all[P_all["Features"] == "without Cycle"]
+plt.rcParams.update({"font.size": 10, "axes.labelsize": 10, "legend.fontsize": 9,
+                     "xtick.labelsize": 9, "ytick.labelsize": 9})
+STY = {"Actual": dict(color="black", ls="-", lw=1.6),
+       "LSTM": dict(color="tab:blue", ls="--", lw=1.4, marker="s", ms=4, mfc="white", markevery=8),
+       "Hybrid CNN-LSTM": dict(color="tab:brown", ls="-", lw=1.4, marker="^", ms=5, markevery=(4, 8))}
+fig, ax = plt.subplots(2, 4, figsize=(12, 5.2))
+for c, b in enumerate(BATTERIES):
+    eol = int(df.loc[df.Battery == b, "EOL_cycle"].iloc[0])
+    for kind in ["LSTM", "Hybrid CNN-LSTM"]:
+        g = P_all[(P_all["Test cell"] == b) & (P_all["Model"] == kind)].sort_values("Cycle")
+        if kind == "LSTM":
+            ax[0, c].plot(g.Cycle, 100 * g["Actual SOH"], label="Actual", **STY["Actual"])
+            ax[1, c].plot(g.Cycle[g.Cycle <= eol], g["Actual RUL"][g.Cycle <= eol], label="Actual", **STY["Actual"])
+        ax[0, c].plot(g.Cycle, 100 * g["Pred SOH"], label=kind, **STY[kind])
+        gr_ = g[g.Cycle <= eol]                                      # RUL is defined (and scored) up to EOL
+        ax[1, c].plot(gr_.Cycle, gr_["Pred RUL"], label=kind, **STY[kind])
+    for r in (0, 1):
+        ax[r, c].axvline(eol, color="gray", ls=":", lw=1.2)
+        ax[r, c].grid(True, alpha=0.3)
+    ax[0, c].axhline(80, color="gray", ls="-.", lw=0.9)
+    ax[0, c].set_title(f"Test cell {b} (EOL at cycle {eol})", fontsize=10)
+    ax[1, c].set_xlabel("Discharge cycle")
+ax[0, 0].set_ylabel("SOH (%)"); ax[1, 0].set_ylabel("RUL (cycles)")
+ax[0, 0].legend(frameon=False, loc="lower left")
+fig.tight_layout()
+fig.savefig(os.path.join(OUT, "Fig_LOCO_SOH_RUL.png"), dpi=300)
+plt.show()
+
+# ===== Cell 12 =====
+# Fig. 5 — per-seed RMSE on each held-out cell (five seeds per box)
+cfg = [("LSTM", "with Cycle", "LSTM, w/ Cycle"), ("LSTM", "without Cycle", "LSTM, w/o Cycle"),
+       ("Hybrid CNN-LSTM", "with Cycle", "CNN-LSTM, w/ Cycle"), ("Hybrid CNN-LSTM", "without Cycle", "CNN-LSTM, w/o Cycle")]
+sty = [dict(fc="white", ec="tab:blue", hatch=""), dict(fc="tab:blue", ec="tab:blue", hatch="", alpha=.55),
+       dict(fc="white", ec="tab:brown", hatch="///"), dict(fc="tab:brown", ec="tab:brown", hatch="", alpha=.55)]
+plt.rcParams.update({"font.size": 9, "axes.labelsize": 9, "legend.fontsize": 7.5, "xtick.labelsize": 8.5, "ytick.labelsize": 8})
+fig, ax = plt.subplots(2, 1, figsize=(3.5, 4.3), sharex=True)
+for r, (col, lab, sc) in enumerate([("SOH RMSE", "SOH RMSE ($\\times10^{-2}$)", 100), ("RUL RMSE", "RUL RMSE (cycles)", 1)]):
+    for k, (m, f, name) in enumerate(cfg):
+        data = [per_seed[(per_seed["Test cell"] == c) & (per_seed.Model == m) & (per_seed.Features == f)][col].values * sc
+                for c in BATTERIES]
+        bp = ax[r].boxplot(data, positions=np.arange(4) * 5 + k, widths=0.8, patch_artist=True,
+                           medianprops=dict(color="black", lw=1), flierprops=dict(marker="o", ms=2.5))
+        for b in bp["boxes"]:
+            b.set_facecolor(sty[k]["fc"]); b.set_edgecolor(sty[k]["ec"]); b.set_hatch(sty[k]["hatch"])
+            if "alpha" in sty[k]: b.set_alpha(sty[k]["alpha"])
+        for part in ("whiskers", "caps"):
+            for l in bp[part]: l.set_color(sty[k]["ec"])
+        if r == 0:
+            ax[r].bar([np.nan], [np.nan], color=sty[k]["fc"], edgecolor=sty[k]["ec"], hatch=sty[k]["hatch"],
+                      alpha=sty[k].get("alpha", 1), label=name)
+    ax[r].set_ylabel(lab); ax[r].grid(True, axis="y", alpha=.3)
+    for x in [4, 9, 14]: ax[r].axvline(x, color="gray", lw=.5)
+ax[1].set_xticks(np.arange(4) * 5 + 1.5); ax[1].set_xticklabels(BATTERIES); ax[1].set_xlabel("Held-out cell")
+ax[0].legend(ncol=2, frameon=False, loc="upper left", bbox_to_anchor=(0, 1.32), columnspacing=0.8, handlelength=1.4)
+fig.tight_layout()
+fig.savefig(os.path.join(OUT, "Fig_seed_variability.png"), dpi=300, bbox_inches="tight")
+plt.show()
+
+# ===== Cell 13 =====
 import math
 import numpy as np
 try:
@@ -348,28 +524,23 @@ except ImportError:          # Colab: install once
     subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'gradio'], check=True)
     import gradio as gr
 
-# ---------- data used by the interface ----------
+# ---------- data used by the interface: LSTM (no Cycle input), held-out cell B0018 ----------
+P = preds[(preds["Test cell"] == "B0018") & (preds["Features"] == "without Cycle") & (preds["Model"] == "LSTM")].sort_values("Cycle")
+TW_CYC = P["Cycle"].values.astype(int)
+TW_PRED = P[["Pred SOH", "Pred RUL"]].values
+TW_ACT = P[["Actual SOH", "Actual RUL"]].values
+TW_MODEL = "LSTM (no Cycle input)"
+test_df = df[df["Battery"] == "B0018"].copy()
 battery_view = test_df.reset_index(drop=True)
-try:                                   # predictions of the model chosen in Section 5
-    TW_CYC = np.asarray(test_cycles)
-    TW_PRED = np.asarray(PRED[BEST])
-    TW_ACT = np.asarray(actual)
-    TW_MODEL = BEST
-except NameError:                      # fallback: predict every window once
-    X_all, y_all = make_sequences(test_df)
-    TW_PRED = y_scaler.inverse_transform(model.predict(X_all, verbose=0))
-    TW_ACT = y_scaler.inverse_transform(y_all)
-    TW_CYC = test_df["Cycle"].values[sequence_length - 1:]
-    TW_MODEL = "AI model"
 RUL_MAX = float(max(TW_ACT[:, 1].max(), 1))
 CE_REF = float(gaussian_mean) * 100
 CE_STD = float(gaussian_std) * 100
-FLEET = {b: df[df["Battery"] == b].reset_index(drop=True) for b in ["B0005", "B0006", "B0007", "B0018"]}
+FLEET = {b: df[df["Battery"] == b].reset_index(drop=True) for b in BATTERIES}
 STATUS = {"HEALTHY": "#16a34a", "WARNING": "#f59e0b", "CRITICAL": "#dc2626"}
 STATUS_TEXT = {"HEALTHY": "#15803d", "WARNING": "#b45309", "CRITICAL": "#b91c1c"}
 
 def health(soh):
-    return "HEALTHY" if soh >= 85 else ("WARNING" if soh >= 70 else "CRITICAL")
+    return "HEALTHY" if soh >= 90 else ("WARNING" if soh >= 80 else "CRITICAL")
 
 # ---------- SVG building blocks ----------
 def battery_svg(pct, color, w=150, h=260, text=None, sub=None, glow=True):
@@ -435,8 +606,8 @@ def trend_svg(i, w=460, h=230):
     pp = " ".join(f"{X(c):.1f},{Y(v):.1f}" for c, v in zip(cyc, soh_p))
     grid = "".join(f'<line x1="34" x2="{w-10}" y1="{Y(g):.1f}" y2="{Y(g):.1f}" stroke="#e2e8f0"/><text x="28" y="{Y(g)+4:.1f}" text-anchor="end" font-size="10" fill="#64748b">{g}</text>' for g in (70, 80, 90, 100))
     return f'''<svg viewBox="0 0 {w} {h}" preserveAspectRatio="xMidYMid meet">{grid}
-      <line x1="34" x2="{w-10}" y1="{Y(70):.1f}" y2="{Y(70):.1f}" stroke="#dc2626" stroke-dasharray="5 4"/>
-      <text x="{w-12}" y="{Y(70)-4:.1f}" text-anchor="end" font-size="10" fill="#dc2626">EOL 70%</text>
+      <line x1="34" x2="{w-10}" y1="{Y(80):.1f}" y2="{Y(80):.1f}" stroke="#dc2626" stroke-dasharray="5 4"/>
+      <text x="{w-12}" y="{Y(80)-4:.1f}" text-anchor="end" font-size="10" fill="#dc2626">EOL 80%</text>
       <polyline points="{pa}" fill="none" stroke="#475569" stroke-width="1.6"/>
       <polyline points="{pp}" fill="none" stroke="#0284c7" stroke-width="2.4"/>
       <circle cx="{X(cyc[-1]):.1f}" cy="{Y(soh_p[-1]):.1f}" r="5" fill="#0284c7"/>
@@ -473,9 +644,9 @@ def final_digital_twin(cycle):
       <div class="ptitle">State of Health</div>
       {battery_svg(soh, col, 120, 200, f"{soh:.1f}%", "AI predicted")}
       <div class="meas">measured {TW_ACT[i,0]*100:.1f}%</div>
-      <div class="thr"><div><i style="background:#16a34a"></i><span style="color:#334155">Healthy ≥ 85%</span></div>
-        <div><i style="background:#f59e0b"></i><span style="color:#334155">Warning 70–85%</span></div>
-        <div><i style="background:#dc2626"></i><span style="color:#334155">Critical &lt; 70%</span></div></div>
+      <div class="thr"><div><i style="background:#16a34a"></i><span style="color:#334155">Healthy ≥ 90%</span></div>
+        <div><i style="background:#f59e0b"></i><span style="color:#334155">Warning 80–90%</span></div>
+        <div><i style="background:#dc2626"></i><span style="color:#334155">Critical &lt; 80%</span></div></div>
     </div>
     <div class="col">
       <div class="panel">
@@ -574,4 +745,54 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css, js=FORCE_LIGHT) as final_interfa
     cycle_slider.change(final_digital_twin, cycle_slider, output)
     final_interface.load(final_digital_twin, cycle_slider, output)
 
+# which cycles are healthy / warning / critical (to choose the screenshot cycle)
+_s = pd.DataFrame({"Cycle": TW_CYC, "Pred SOH (%)": 100 * TW_PRED[:, 0]})
+_s["Status"] = _s["Pred SOH (%)"].apply(health)
+print(_s.groupby("Status")["Cycle"].agg(["min", "max", "count"]))
+
 final_interface.launch(share=True)
+
+# ===== Cell 14 =====
+# Export the Digital Twin as ONE standalone HTML file (opens in any browser, no Python/Colab needed)
+# Run AFTER the Digital Twin cell. Saves: FYP_NASA_Battery/paper_results/revised/Digital_Twin_B0018.html
+import json, os, html as _html
+
+views = [final_digital_twin(int(c)) for c in TW_CYC]          # one dashboard per test cycle
+start = 0                                                       # open at the first test cycle
+page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-Enabled Battery Digital Twin - NASA B0018</title>
+<style>
+body{{margin:0;background:#f1f5f9;font-family:Inter,Segoe UI,Arial,sans-serif;color:#0f172a}}
+.wrap{{max-width:1500px;margin:0 auto;padding:18px}}
+.bar{{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px 16px;margin-bottom:14px;
+      display:flex;align-items:center;gap:14px;flex-wrap:wrap}}
+.bar h2{{margin:0;font-size:18px}} .bar label{{font-weight:600;font-size:14px}}
+.bar input[type=range]{{flex:1;min-width:200px;accent-color:#4f46e5}}
+.bar output{{font-weight:700;min-width:90px}} .note{{font-size:12px;color:#64748b;margin-top:10px}}
+{css}
+</style></head><body><div class="wrap">
+<div class="bar"><h2>🔋 AI-Enabled Battery Digital Twin</h2>
+  <label for="cyc">Select battery cycle</label>
+  <input id="cyc" type="range" min="0" max="{len(views)-1}" value="{start}" step="1">
+  <output id="lbl"></output></div>
+<div id="view"></div>
+<div class="note">{TW_MODEL} predictions for the unseen NASA battery B0018 ({len(views)} cycles).
+Offline software prototype that replays recorded NASA data; end of life = 80% SOH.</div>
+</div>
+<script>
+const VIEWS = {json.dumps(views)};
+const CYCLES = {json.dumps([int(c) for c in TW_CYC])};
+const s = document.getElementById("cyc"), v = document.getElementById("view"), l = document.getElementById("lbl");
+function show() {{ v.innerHTML = VIEWS[s.value]; l.textContent = "Cycle " + CYCLES[s.value]; }}
+s.addEventListener("input", show); show();
+</script></body></html>"""
+path = os.path.join(OUT, "Digital_Twin_B0018.html")
+with open(path, "w", encoding="utf-8") as f:
+    f.write(page)
+print("Saved:", path, f"({os.path.getsize(path)/1e6:.1f} MB) - download it and open in any browser")
+try:                                   # Colab: download straight to the computer
+    from google.colab import files; files.download(path)
+except Exception:
+    pass

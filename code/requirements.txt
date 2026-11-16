@@ -4,7 +4,7 @@ scipy
 scikit-learn
 tensorflow
 matplotlib
-gradio
 
-# The notebook is written for Google Colab. gradio powers the digital-twin
-# interface (Figs 4-5). Versions are left unpinned to match the Colab environment.
+# The notebook is written for Google Colab (T4 GPU). The digital twin is a
+# standalone HTML file and needs no Python. Versions are left unpinned to match
+# the Colab environment.
